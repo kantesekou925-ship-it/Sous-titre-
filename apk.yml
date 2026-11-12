@@ -1,0 +1,462 @@
+name: Build APK voix
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Creer le projet Android et compiler
+        run: |
+          mkdir -p android/app/src/main/java/com/soustitres/voix android/app/src/main/res/values android/app/src/main/res/xml
+          cat > android/settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'VoixSousTitres'
+          include ':app'
+          EOF
+          cat > android/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > android/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF
+          cat > android/app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.soustitres.voix'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.soustitres.voix'
+                  minSdk 26
+                  targetSdk 34
+                  versionCode 1
+                  versionName '2.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          EOF
+          cat > android/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <queries>
+                  <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+              </queries>
+              <application
+                  android:label="@string/app_name"
+                  android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".SubtitleService"
+                      android:label="@string/app_name"
+                      android:exported="true"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility_config" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+          cat > android/app/src/main/res/values/strings.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Voix de sous-titres</string>
+              <string name="service_desc">Lit à voix haute les sous-titres affichés à l\u2019écran, avec des voix différentes.</string>
+          </resources>
+          EOF
+          cat > android/app/src/main/res/xml/accessibility_config.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeWindowContentChanged|typeWindowStateChanged"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
+              android:canRetrieveWindowContent="true"
+              android:notificationTimeout="100"
+              android:description="@string/service_desc" />
+          EOF
+          cat > android/app/src/main/java/com/soustitres/voix/MainActivity.java <<'EOF'
+          package com.soustitres.voix;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.graphics.Typeface;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.provider.Settings;
+          import android.speech.tts.TextToSpeech;
+          import android.widget.Button;
+          import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.Switch;
+          import android.widget.TextView;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              private TextView status;
+              private TextToSpeech test;
+
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  int pad = (int) (20 * getResources().getDisplayMetrics().density);
+                  LinearLayout box = new LinearLayout(this);
+                  box.setOrientation(LinearLayout.VERTICAL);
+                  box.setPadding(pad, pad * 2, pad, pad);
+                  ScrollView sv = new ScrollView(this);
+                  sv.addView(box);
+                  setContentView(sv);
+
+                  TextView title = new TextView(this);
+                  title.setText("Voix de sous-titres");
+                  title.setTextSize(26);
+                  title.setTypeface(Typeface.DEFAULT_BOLD);
+                  box.addView(title);
+
+                  TextView help = new TextView(this);
+                  help.setTextSize(16);
+                  help.setPadding(0, pad / 2, 0, pad / 2);
+                  help.setText("1. Touchez le premier bouton, ouvrez \"Voix de sous-titres\" et activez-le.\n"
+                          + "2. Lancez votre film (Netflix, YouTube...) avec les sous-titres affich\u00e9s, de pr\u00e9f\u00e9rence en plein \u00e9cran horizontal.\n"
+                          + "3. Les sous-titres sont lus \u00e0 voix haute pendant le film, avec des voix diff\u00e9rentes. La langue est d\u00e9tect\u00e9e automatiquement.\n\n"
+                          + "Si Android refuse l'activation : bouton du bas, puis menu \u22ee en haut \u00e0 droite, puis \"Autoriser les param\u00e8tres restreints\".");
+                  box.addView(help);
+
+                  status = new TextView(this);
+                  status.setTextSize(17);
+                  status.setTypeface(Typeface.DEFAULT_BOLD);
+                  status.setPadding(0, pad / 2, 0, pad / 2);
+                  box.addView(status);
+
+                  Button open = new Button(this);
+                  open.setText("Ouvrir les r\u00e9glages d'accessibilit\u00e9");
+                  open.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+                  box.addView(open);
+
+                  Switch sw = new Switch(this);
+                  sw.setText("Lecture vocale activ\u00e9e");
+                  sw.setTextSize(17);
+                  sw.setPadding(0, pad, 0, pad);
+                  sw.setChecked(getSharedPreferences("p", MODE_PRIVATE).getBoolean("on", true));
+                  sw.setOnCheckedChangeListener((btn, on) ->
+                          getSharedPreferences("p", MODE_PRIVATE).edit().putBoolean("on", on).apply());
+                  box.addView(sw);
+
+                  test = new TextToSpeech(this, st -> { });
+                  Button t = new Button(this);
+                  t.setText("Tester les voix");
+                  t.setOnClickListener(v -> {
+                      test.setLanguage(Locale.ENGLISH);
+                      test.setPitch(1.0f);
+                      test.speak("Hello, this is the first voice.", TextToSpeech.QUEUE_FLUSH, null, "t1");
+                      test.setPitch(0.8f);
+                      test.speak("And this is the second voice.", TextToSpeech.QUEUE_ADD, null, "t2");
+                      test.setPitch(1.25f);
+                      test.speak("The third voice sounds different.", TextToSpeech.QUEUE_ADD, null, "t3");
+                  });
+                  box.addView(t);
+
+                  Button info = new Button(this);
+                  info.setText("Param\u00e8tres de l'application");
+                  info.setOnClickListener(v -> startActivity(new Intent(
+                          Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName()))));
+                  box.addView(info);
+              }
+
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  String s = Settings.Secure.getString(getContentResolver(), Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+                  boolean on = s != null && s.contains(getPackageName());
+                  status.setText(on ? "Service activ\u00e9, pr\u00eat \u00e0 lire les sous-titres."
+                          : "Service d\u00e9sactiv\u00e9 : activez-le dans les r\u00e9glages d'accessibilit\u00e9.");
+              }
+
+              @Override
+              protected void onDestroy() {
+                  if (test != null) test.shutdown();
+                  super.onDestroy();
+              }
+          }
+          EOF
+          cat > android/app/src/main/java/com/soustitres/voix/SubtitleService.java <<'EOF'
+          package com.soustitres.voix;
+
+          import android.accessibilityservice.AccessibilityService;
+          import android.content.res.Configuration;
+          import android.graphics.Rect;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.speech.tts.TextToSpeech;
+          import android.speech.tts.Voice;
+          import android.util.DisplayMetrics;
+          import android.view.accessibility.AccessibilityEvent;
+          import android.view.accessibility.AccessibilityNodeInfo;
+          import java.util.ArrayList;
+          import java.util.Collections;
+          import java.util.HashMap;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.regex.Matcher;
+          import java.util.regex.Pattern;
+
+          public class SubtitleService extends AccessibilityService implements TextToSpeech.OnInitListener {
+              private static final float[] PITCH = {1.0f, 0.8f, 1.25f, 0.9f, 1.12f, 0.7f};
+              private static final Pattern NAME1 = Pattern.compile("^([A-Z\u00C0-\u00DD][A-Z\u00C0-\u00DD0-9 '\u2019.\\-]{1,24})\\s*:\\s*(.+)$");
+              private static final Pattern NAME2 = Pattern.compile("^[\\[(]([^\\])]{1,25})[\\])]\\s*:?\\s*(.+)$");
+              private static final Pattern BRACKETED = Pattern.compile("^[\\[(][^\\])]*[\\])]$");
+              private static final Pattern CLOCK = Pattern.compile("^[-+]?\\d{1,2}(:\\d{2}){1,2}$");
+
+              private static class Cand {
+                  int top;
+                  String text;
+                  boolean sub;
+              }
+
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final Map<String, Integer> names = new HashMap<>();
+              private final List<Voice> voices = new ArrayList<>();
+              private TextToSpeech tts;
+              private boolean ready = false;
+              private String pending = "";
+              private String lastSpoken = "";
+              private String voiceLang = "";
+              private long lastTime = 0;
+              private long emptySince = 0;
+              private int flip = 0;
+
+              private final Runnable fire = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (!pending.isEmpty() && !pending.equals(lastSpoken)) {
+                          lastSpoken = pending;
+                          speak(pending);
+                      }
+                  }
+              };
+
+              @Override
+              protected void onServiceConnected() {
+                  super.onServiceConnected();
+                  tts = new TextToSpeech(this, this);
+              }
+
+              @Override
+              public void onInit(int status) {
+                  ready = status == TextToSpeech.SUCCESS;
+              }
+
+              @Override
+              public void onInterrupt() {
+                  if (tts != null) tts.stop();
+              }
+
+              @Override
+              public void onDestroy() {
+                  if (tts != null) tts.shutdown();
+                  super.onDestroy();
+              }
+
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent e) {
+                  if (!ready || e == null) return;
+                  if (!getSharedPreferences("p", MODE_PRIVATE).getBoolean("on", true)) return;
+                  CharSequence pk = e.getPackageName();
+                  if (pk == null) return;
+                  String p = pk.toString();
+                  if (p.equals(getPackageName()) || p.equals("com.android.systemui")
+                          || p.contains("launcher") || p.contains("inputmethod")) return;
+                  AccessibilityNodeInfo root = getRootInActiveWindow();
+                  if (root == null) return;
+
+                  DisplayMetrics dm = getResources().getDisplayMetrics();
+                  boolean land = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+                  List<Cand> all = new ArrayList<>();
+                  collect(root, all, dm.heightPixels, 0);
+
+                  List<Cand> use = new ArrayList<>();
+                  for (Cand c : all) if (c.sub) use.add(c);
+                  if (use.isEmpty() && land) use = all;
+                  Collections.sort(use, (a, b) -> Integer.compare(a.top, b.top));
+
+                  StringBuilder sb = new StringBuilder();
+                  for (Cand c : use) {
+                      for (String line : c.text.split("\n")) {
+                          String t = line.trim();
+                          if (t.isEmpty() || CLOCK.matcher(t).matches() || BRACKETED.matcher(t).matches()) continue;
+                          if (sb.length() > 0) sb.append("\n");
+                          sb.append(t);
+                      }
+                  }
+                  String joined = sb.toString();
+                  long now = System.currentTimeMillis();
+                  if (joined.isEmpty()) {
+                      pending = "";
+                      handler.removeCallbacks(fire);
+                      if (emptySince == 0) emptySince = now;
+                      else if (now - emptySince > 900) lastSpoken = "";
+                      return;
+                  }
+                  if (emptySince != 0 && now - emptySince > 900) lastSpoken = "";
+                  emptySince = 0;
+                  if (!joined.equals(pending)) {
+                      pending = joined;
+                      handler.removeCallbacks(fire);
+                      handler.postDelayed(fire, 250);
+                  }
+              }
+
+              private void collect(AccessibilityNodeInfo n, List<Cand> out, int h, int depth) {
+                  if (n == null || depth > 40) return;
+                  CharSequence t = n.getText();
+                  if (t != null && t.length() > 1 && t.length() < 220
+                          && !n.isClickable() && !n.isEditable() && n.isVisibleToUser()) {
+                      Rect r = new Rect();
+                      n.getBoundsInScreen(r);
+                      String id = n.getViewIdResourceName();
+                      String il = id == null ? "" : id.toLowerCase();
+                      boolean sub = il.contains("subtitle") || il.contains("caption") || il.contains("cue");
+                      if (sub || (r.top > h * 0.45 && r.bottom < h * 0.97)) {
+                          Cand c = new Cand();
+                          c.top = r.top;
+                          c.text = t.toString();
+                          c.sub = sub;
+                          out.add(c);
+                      }
+                  }
+                  for (int i = 0; i < n.getChildCount(); i++) collect(n.getChild(i), out, h, depth + 1);
+              }
+
+              private String detect(String text) {
+                  String s = " " + text.toLowerCase().replaceAll("\\p{Punct}", " ") + " ";
+                  String[][] w = {
+                      {"en", " the ", " and ", " you ", " is ", " that ", " it ", " of ", " i ", " to ", " what "},
+                      {"fr", " le ", " la ", " les ", " est ", " une ", " pas ", " vous ", " je ", " et ", " que "},
+                      {"es", " el ", " los ", " una ", " es ", " por ", " no ", " un ", " que ", " y "},
+                      {"de", " der ", " die ", " und ", " ist ", " nicht ", " ich ", " das ", " du "},
+                      {"it", " il ", " che ", " di ", " non ", " sono ", " per ", " e ", " una "},
+                      {"pt", " o ", " n\u00e3o ", " uma ", " voc\u00ea ", " em ", " os ", " que ", " para "}
+                  };
+                  String best = voiceLang.isEmpty() ? Locale.getDefault().getLanguage() : voiceLang;
+                  int n = 0;
+                  for (String[] row : w) {
+                      int sc = 0;
+                      for (int i = 1; i < row.length; i++) {
+                          int idx = 0;
+                          while ((idx = s.indexOf(row[i], idx)) >= 0) {
+                              sc++;
+                              idx += row[i].length() - 1;
+                          }
+                      }
+                      if (sc > n) {
+                          n = sc;
+                          best = row[0];
+                      }
+                  }
+                  return best;
+              }
+
+              private void loadVoices(String lang) {
+                  voices.clear();
+                  try {
+                      Set<Voice> all = tts.getVoices();
+                      if (all != null) {
+                          for (Voice v : all) {
+                              boolean installed = v.getFeatures() == null || !v.getFeatures().contains("notInstalled");
+                              if (v.getLocale().getLanguage().equals(lang) && !v.isNetworkConnectionRequired() && installed) {
+                                  voices.add(v);
+                              }
+                          }
+                      }
+                  } catch (Exception ignored) {
+                  }
+                  Collections.sort(voices, (a, b) -> a.getName().compareTo(b.getName()));
+                  tts.setLanguage(new Locale(lang));
+              }
+
+              private void speak(String text) {
+                  String lang = detect(text);
+                  if (!lang.equals(voiceLang)) {
+                      voiceLang = lang;
+                      loadVoices(lang);
+                  }
+                  long now = System.currentTimeMillis();
+                  if (now - lastTime > 2500) flip++;
+                  lastTime = now;
+                  boolean first = true;
+                  for (String raw : text.split("\n")) {
+                      String t = raw.trim();
+                      if (t.isEmpty()) continue;
+                      boolean dash = t.matches("^[-\u2013\u2014].*");
+                      t = t.replaceFirst("^[-\u2013\u2014]\\s*", "");
+                      String name = null;
+                      Matcher m = NAME1.matcher(t);
+                      if (!m.find()) {
+                          m = NAME2.matcher(t);
+                          if (!m.find()) m = null;
+                      }
+                      if (m != null) {
+                          name = m.group(1).trim().toLowerCase();
+                          t = m.group(2);
+                      }
+                      t = t.replaceAll("[\u266A\u266B#]", "").trim();
+                      if (t.isEmpty()) continue;
+                      int k;
+                      if (name != null) {
+                          Integer v = names.get(name);
+                          if (v == null) {
+                              v = names.size() + 3;
+                              names.put(name, v);
+                          }
+                          k = v;
+                      } else {
+                          if (dash) flip++;
+                          k = flip % 3;
+                      }
+                      if (!voices.isEmpty()) tts.setVoice(voices.get(k % voices.size()));
+                      tts.setPitch(PITCH[k % PITCH.length]);
+                      tts.setSpeechRate(1.1f);
+                      tts.speak(t, first ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, null, "s" + now + "_" + k);
+                      first = false;
+                  }
+              }
+          }
+          EOF
+          cd android && gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoixSousTitres-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: voix-${{ github.run_number }}
+          name: APK voix ${{ github.run_number }}
+          files: android/app/build/outputs/apk/debug/app-debug.apk
